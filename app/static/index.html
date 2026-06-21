@@ -49,8 +49,32 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-fetch('/api/health').then(r=>r.json()).then(h=>{ $('#prov').textContent = h.provider + ' (' + h.model + ')'; });
+fetch('/api/health')
+  .then(r => r.ok ? r.json() : Promise.reject(r.status))
+  .then(h => { $('#prov').textContent = h.provider + ' (' + h.model + ')'; })
+  .catch(() => { $('#prov').textContent = 'starting…'; });
 document.querySelectorAll('.chip').forEach(c => c.onclick = () => { $('#prompt').value = c.dataset.ex; });
+
+// Parse a response safely. Free hosts (Render) return a plain "Not Found" /
+// 502 / 503 page while waking from idle, which is not JSON -- handle that
+// instead of throwing a raw SyntaxError at the user.
+async function readJson(res) {
+  const text = await res.text();
+  try {
+    return { ok: true, data: JSON.parse(text) };
+  } catch {
+    return { ok: false, status: res.status, text };
+  }
+}
+
+async function generateOnce() {
+  const res = await fetch('/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: $('#prompt').value.trim() })
+  });
+  return { res, parsed: await readJson(res) };
+}
 
 $('#go').onclick = async () => {
   const prompt = $('#prompt').value.trim();
@@ -58,13 +82,25 @@ $('#go').onclick = async () => {
   $('#go').disabled = true; $('#go').textContent = 'Generating…';
   $('#out').innerHTML = ''; $('#badges').style.display = 'none';
   try {
-    const res = await fetch('/api/generate', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({prompt})
-    });
-    render(await res.json());
+    let { res, parsed } = await generateOnce();
+
+    // Cold-start retry: the free host may be waking up (404/502/503).
+    if (!parsed.ok && [404, 502, 503].includes(res.status)) {
+      $('#out').innerHTML = '<div class="card">Server is waking up (free host). Retrying in 8s…</div>';
+      await new Promise(r => setTimeout(r, 8000));
+      ({ res, parsed } = await generateOnce());
+    }
+
+    if (parsed.ok) {
+      render(parsed.data);
+    } else {
+      const hint = [404, 502, 503].includes(res.status)
+        ? 'The free host is still spinning up — wait ~30s and click Generate again.'
+        : ('Unexpected response (HTTP ' + res.status + '): ' + escapeHtml((parsed.text || '').slice(0, 200)));
+      $('#out').innerHTML = '<div class="card bad">' + hint + '</div>';
+    }
   } catch (e) {
-    $('#out').innerHTML = '<div class="card bad">Request failed: '+e+'</div>';
+    $('#out').innerHTML = '<div class="card bad">Request failed: ' + escapeHtml(String(e)) + '</div>';
   } finally {
     $('#go').disabled = false; $('#go').textContent = 'Generate';
   }

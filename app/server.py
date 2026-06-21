@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.config import settings
@@ -22,6 +22,15 @@ from app.validation.validator import validate_config
 app = FastAPI(title="NL -> App Generation Compiler")
 
 _STATIC = Path(__file__).parent / "static"
+
+
+@app.exception_handler(Exception)
+async def _json_errors(request: Request, exc: Exception) -> JSONResponse:
+    """Guarantee a JSON body on errors so clients never have to parse HTML."""
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": f"{type(exc).__name__}: {exc}"},
+    )
 
 
 class GenerateRequest(BaseModel):
