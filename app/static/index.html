@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NL → App Generation Compiler</title>
+<style>
+  :root { --bg:#0f1117; --card:#1a1d27; --acc:#7c5cff; --ok:#2ecc71; --bad:#ff5c5c; --txt:#e6e6ef; --mut:#9aa0b4; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:24px 32px; border-bottom:1px solid #262a38; }
+  h1 { margin:0; font-size:20px; }
+  .sub { color:var(--mut); font-size:13px; margin-top:4px; }
+  main { max-width:980px; margin:0 auto; padding:28px 20px 60px; }
+  textarea { width:100%; min-height:96px; background:var(--card); color:var(--txt); border:1px solid #2c3142; border-radius:10px; padding:14px; font-size:14px; resize:vertical; }
+  .row { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+  button { background:var(--acc); color:white; border:0; border-radius:8px; padding:11px 18px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .chip { background:var(--card); border:1px solid #2c3142; color:var(--mut); padding:6px 10px; border-radius:20px; font-size:12px; cursor:pointer; }
+  .badges { display:flex; gap:10px; flex-wrap:wrap; margin:18px 0; }
+  .badge { padding:8px 12px; border-radius:8px; font-size:13px; background:var(--card); border:1px solid #2c3142; }
+  .badge b { color:var(--txt); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .card { background:var(--card); border:1px solid #2c3142; border-radius:12px; padding:16px; margin-top:16px; }
+  .card h3 { margin:0 0 10px; font-size:14px; color:var(--mut); text-transform:uppercase; letter-spacing:.04em; }
+  pre { margin:0; max-height:420px; overflow:auto; font-size:12.5px; line-height:1.5; }
+  .pill { display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; margin-right:6px; }
+  .pill.ok { background:rgba(46,204,113,.15); } .pill.bad { background:rgba(255,92,92,.15); }
+  ul { margin:6px 0 0; padding-left:18px; } li { font-size:13px; margin:3px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Natural Language → Application Compiler</h1>
+  <div class="sub">Intent → Design → Schemas → Validate → Repair → Execute. Provider: <span id="prov">…</span></div>
+</header>
+<main>
+  <textarea id="prompt" placeholder="e.g. Build a CRM with login, contacts, dashboard, role-based access, and a premium plan with payments. Admins can see analytics."></textarea>
+  <div class="row">
+    <button id="go">Generate</button>
+    <span class="chip" data-ex="Build a CRM with login, contacts, dashboard, role-based access, and a premium plan with payments. Admins can see analytics.">CRM example</span>
+    <span class="chip" data-ex="Build a task manager where users create tasks and mark them done.">Task app</span>
+    <span class="chip" data-ex="Build an online store with products, orders, and admin analytics.">Store</span>
+  </div>
+
+  <div id="badges" class="badges" style="display:none"></div>
+  <div id="out"></div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+fetch('/api/health').then(r=>r.json()).then(h=>{ $('#prov').textContent = h.provider + ' (' + h.model + ')'; });
+document.querySelectorAll('.chip').forEach(c => c.onclick = () => { $('#prompt').value = c.dataset.ex; });
+
+$('#go').onclick = async () => {
+  const prompt = $('#prompt').value.trim();
+  if (!prompt) return;
+  $('#go').disabled = true; $('#go').textContent = 'Generating…';
+  $('#out').innerHTML = ''; $('#badges').style.display = 'none';
+  try {
+    const res = await fetch('/api/generate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({prompt})
+    });
+    render(await res.json());
+  } catch (e) {
+    $('#out').innerHTML = '<div class="card bad">Request failed: '+e+'</div>';
+  } finally {
+    $('#go').disabled = false; $('#go').textContent = 'Generate';
+  }
+};
+
+function render(d) {
+  if (d.clarifying_questions && d.clarifying_questions.length && !d.config) {
+    $('#out').innerHTML = '<div class="card"><h3>Need clarification</h3><ul>' +
+      d.clarifying_questions.map(q=>'<li>'+q+'</li>').join('') + '</ul></div>';
+    return;
+  }
+  const m = d.metrics || {};
+  const v = d.validation || {ok:false, errors:[]};
+  const rt = d.runtime || {executable:false};
+  $('#badges').style.display = 'flex';
+  $('#badges').innerHTML = [
+    badge('Success', d.success), 
+    badge('Valid', v.ok),
+    badge('Executable', rt.executable),
+    info('Latency', (m.latency_ms||0)+' ms'),
+    info('Repair attempts', m.repair_attempts||0),
+    info('Layers repaired', (m.layers_repaired||[]).join(', ')||'none'),
+  ].join('');
+
+  let html = '';
+  if (v.errors && v.errors.length) {
+    html += card('Validation errors', '<ul>'+v.errors.map(e=>'<li class="bad">['+e.layer+'/'+e.code+'] '+e.message+'</li>').join('')+'</ul>');
+  }
+  if (rt.entities) {
+    html += card('Runtime smoke test', '<div>'+rt.entities.map(e=>
+      '<span class="pill '+(e.ok?'ok':'bad')+'">'+e.entity+(e.ok?' ✓':' ✗')+'</span>').join('')+'</div>');
+  }
+  if (d.config) {
+    html += card('Generated config (UI / API / DB / Auth)', '<pre>'+escapeHtml(JSON.stringify(d.config, null, 2))+'</pre>');
+  }
+  $('#out').innerHTML = html;
+}
+function badge(label, ok){ return '<div class="badge"><b>'+label+':</b> <span class="'+(ok?'ok':'bad')+'">'+(ok?'yes':'no')+'</span></div>'; }
+function info(label, val){ return '<div class="badge"><b>'+label+':</b> '+val+'</div>'; }
+function card(title, body){ return '<div class="card"><h3>'+title+'</h3>'+body+'</div>'; }
+function escapeHtml(s){ return s.replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+</script>
+</body>
+</html>
